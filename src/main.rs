@@ -28,20 +28,12 @@ struct Packages {
 #[derive(Deserialize, Debug)]
 struct PackageLockJson {
     #[allow(unused)]
-    packages: HashMap<String, Packages>,
-}
-
-#[derive(Deserialize, Debug)]
-struct PackageLockJsonV1 {
-    #[allow(unused)]
-    dependencies: HashMap<String, Packages>,
-}
-
-#[derive(Deserialize, Debug)]
-struct PartialPackageLockJson {
+    packages: Option<HashMap<String, Packages>>,
     #[allow(unused)]
     #[serde(rename = "lockfileVersion")]
     lockfile_version: Option<i32>,
+    #[allow(unused)]
+    dependencies: Option<HashMap<String, Packages>>,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -59,7 +51,7 @@ struct Cli {
     package: String
 }
 
-const PARALLEL_REQUESTS: usize = 64;
+const PARALLEL_REQUESTS: usize = 100;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -98,20 +90,20 @@ async fn main() -> Result<()> {
                 .body(Body::empty())
                 .unwrap();
             let client = client.clone();
-            let result = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let res = client.request(request).await?;
                 if res.status() == 404 {
                     println!("{:?}: {:?}", res.status(), uri.clone());
                 }
                 return body::to_bytes(res).await;
-            });
-            return result;
+            })
         })
         .buffered(PARALLEL_REQUESTS)
         .map_ok(|body| {
             let not_found = String::from("-------");
 
             let body_bytes = body.expect("error: no body");
+
             let body_str = match str::from_utf8(&body_bytes) {
                 Ok(s) => s,
                 Err(e) => {
@@ -120,51 +112,34 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let partial_package_lock_json: PartialPackageLockJson = match serde_json::from_str(body_str) {
+            let package_lock_json: PackageLockJson = match serde_json::from_str(body_str) {
                 Ok(json) => json,
                 Err(e) => {
-                    eprintln!("Error parsing lockfile version: {}", e);
+                    eprintln!("Error parsing JSON: {}", e);
                     return not_found.clone();
                 }
             };
 
-            if let Some(lockfile_version) = partial_package_lock_json.lockfile_version {
+            if let Some(lockfile_version) = package_lock_json.lockfile_version {
                 if lockfile_version == 1 {
-                    let package_lock_json_v1: PackageLockJsonV1 = match serde_json::from_str(body_str) {
-                        Ok(json) => json,
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                            return not_found.clone();
+                    if let Some(dependencies) = &package_lock_json.dependencies {
+                        if let Some(package) = dependencies.get(package_name) {
+                            if let Some(version) = &package.version {
+                                return version.clone();
+                            }
                         }
-                    };
-
-                    if let Some(package) = package_lock_json_v1.dependencies.get(package_name) {
-                        if let Some(version) = &package.version {
-                            return version.clone();
-                        }
-
-                        return not_found.clone();
                     }
-
                     return not_found.clone();
                 }
             }
 
-            let package_lock_json: PackageLockJson = match serde_json::from_str(body_str) {
-                Ok(json) => json,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    return not_found.clone();
+            if let Some(packages) = &package_lock_json.packages {
+                let node_modules_package_name = format!("node_modules/{}", package_name);
+                if let Some(package) = packages.get(&node_modules_package_name) {
+                    if let Some(version) = &package.version {
+                        return version.clone();
+                    }
                 }
-            };
-
-            let node_modules_package_name = format!("node_modules/{}", package_name);
-            if let Some(package) = package_lock_json.packages.get(&node_modules_package_name) {
-                if let Some(version) = &package.version {
-                    return version.clone();
-                }
-
-                return not_found.clone();
             }
 
             return not_found.clone();
