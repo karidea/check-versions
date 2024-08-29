@@ -31,6 +31,19 @@ struct PackageLockJson {
     packages: HashMap<String, Packages>,
 }
 
+#[derive(Deserialize, Debug)]
+struct PackageLockJsonV1 {
+    #[allow(unused)]
+    dependencies: HashMap<String, Packages>,
+}
+
+#[derive(Deserialize, Debug)]
+struct PartialPackageLockJson {
+    #[allow(unused)]
+    #[serde(rename = "lockfileVersion")]
+    lockfile_version: Option<i32>,
+}
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Check versions of an npm package given list of repositories
@@ -97,12 +110,52 @@ async fn main() -> Result<()> {
         .buffered(PARALLEL_REQUESTS)
         .map_ok(|body| {
             let not_found = String::from("-------");
-            let package_lock_json: PackageLockJson = match serde_json::from_str(str::from_utf8(&body.expect("error: no body")).unwrap()) {
+
+            let body_bytes = body.expect("error: no body");
+            let body_str = match str::from_utf8(&body_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error converting body to UTF-8: {}", e);
+                    return not_found.clone();
+                }
+            };
+
+            let partial_package_lock_json: PartialPackageLockJson = match serde_json::from_str(body_str) {
+                Ok(json) => json,
+                Err(e) => {
+                    eprintln!("Error parsing lockfile version: {}", e);
+                    return not_found.clone();
+                }
+            };
+
+            if let Some(lockfile_version) = partial_package_lock_json.lockfile_version {
+                if lockfile_version == 1 {
+                    let package_lock_json_v1: PackageLockJsonV1 = match serde_json::from_str(body_str) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            return not_found.clone();
+                        }
+                    };
+
+                    if let Some(package) = package_lock_json_v1.dependencies.get(package_name) {
+                        if let Some(version) = &package.version {
+                            return version.clone();
+                        }
+
+                        return not_found.clone();
+                    }
+
+                    return not_found.clone();
+                }
+            }
+
+            let package_lock_json: PackageLockJson = match serde_json::from_str(body_str) {
                 Ok(json) => json,
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     return not_found.clone();
-                },
+                }
             };
 
             let node_modules_package_name = format!("node_modules/{}", package_name);
