@@ -12,6 +12,7 @@ use hyper::{body, Body, Client, Method, Request};
 use hyper_tls::HttpsConnector;
 use serde::Deserialize;
 use clap::Parser;
+use semver::Version;
 
 #[derive(Deserialize, Debug)]
 struct PackageJson {
@@ -146,14 +147,26 @@ async fn main() -> Result<()> {
         });
 
     let versions: Vec<_> = version_results.collect().await;
-    for (i, version) in versions.iter().enumerate() {
-        match version {
-            Ok(version) => {
-                let repos: Vec<&str> = json[i].split('/').collect();
-                println!("{}\t: {}", version.as_str(), repos[1])
-            },
-            Err(e) => eprintln!("JoinError: {}", e),
-        }
+    let mut version_pairs: Vec<(String, String)> = versions.iter().enumerate()
+        .filter_map(|(i, version)| {
+            match version {
+                Ok(version) if version != "-------" => {
+                    let repos: Vec<&str> = json[i].split('/').collect();
+                    Some((version.clone(), repos[1].to_string()))
+                },
+                _ => None,
+            }
+        })
+        .collect();
+
+    version_pairs.sort_by(|a, b| {
+        let v1 = Version::parse(&a.0).unwrap_or(Version::parse("0.0.0").unwrap());
+        let v2 = Version::parse(&b.0).unwrap_or(Version::parse("0.0.0").unwrap());
+        v1.cmp(&v2)
+    });
+
+    for (version, repo) in version_pairs {
+        println!("{}\t: {}", version, repo);
     }
 
     Ok(())
